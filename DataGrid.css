@@ -1,0 +1,139 @@
+/*
+ * Colour tokens – WCAG 2.2 contrast verified (ratios computed with the
+ * WCAG relative-luminance formula):
+ *   text   #1a1a1a on #ffffff  17.40:1   (needs 4.5:1)
+ *   text   #1a1a1a on #f0f0f0  15.27:1   header cells
+ *   text   #1a1a1a on #dbe8ff  14.09:1   selected row
+ *   muted  #595959 on #ffffff   7.00:1   aria-disabled controls
+ *   focus  #0b57d0 on #ffffff   6.39:1   (needs 3:1 for non-text)
+ *   focus  #0b57d0 on #f0f0f0   5.60:1
+ *   focus  #0b57d0 on #dbe8ff   5.17:1
+ *   border #767676 on #ffffff   4.54:1   control borders
+ */
+.data-grid-wrapper {
+  --grid-text: #1a1a1a;
+  --grid-muted: #595959;
+  --grid-bg: #ffffff;
+  --grid-header-bg: #f0f0f0;
+  --grid-selected-bg: #dbe8ff;
+  --grid-focus: #0b57d0;
+  --grid-control-border: #767676;
+  --grid-row-border: #c8c8c8;
+
+  font: 16px/1.4 system-ui, sans-serif;
+  color: var(--grid-text);
+  background: var(--grid-bg);
+}
+
+.data-grid {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--grid-text);
+  background: var(--grid-bg);
+}
+
+.data-grid th,
+.data-grid td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--grid-row-border);
+  text-align: left;
+}
+
+.data-grid thead th {
+  background: var(--grid-header-bg);
+}
+
+/* Sortable header: the button fills the whole cell so the focus ring and
+   click target match the cell. */
+.data-grid thead th.data-grid__th--sortable {
+  padding: 0;
+}
+
+.data-grid__sort {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.data-grid__sort[aria-disabled="true"] {
+  cursor: progress;
+}
+
+.data-grid tbody tr {
+  cursor: pointer;
+}
+
+.data-grid tbody tr.is-selected {
+  background: var(--grid-selected-bg);
+}
+
+.data-grid[aria-busy="true"] {
+  cursor: progress; /* no opacity dimming: it would lower text contrast */
+}
+
+/* Toolbar + pagination */
+.data-grid__toolbar,
+.data-grid__pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.data-grid__toolbar input {
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+  color: var(--grid-text);
+  background: var(--grid-bg);
+  border: 1px solid var(--grid-control-border);
+}
+
+.data-grid__pagination button {
+  padding: 0.25rem 0.75rem;
+  font: inherit;
+  color: var(--grid-text);
+  background: var(--grid-bg);
+  border: 1px solid var(--grid-control-border);
+  cursor: pointer;
+}
+
+.data-grid__pagination button[aria-disabled="true"] {
+  color: var(--grid-muted);
+  cursor: not-allowed;
+}
+
+.data-grid__status {
+  margin: 0.5rem 0;
+}
+
+/* Visible focus (WCAG 2.4.7): 3px ring, inset so neighbours don't clip it. */
+.data-grid :focus-visible {
+  outline: 3px solid var(--grid-focus);
+  outline-offset: -3px;
+}
+
+.data-grid__toolbar input:focus-visible,
+.data-grid__pagination button:focus-visible {
+  outline: 3px solid var(--grid-focus);
+  outline-offset: 2px;
+}
+
+/* Text for screen readers only (live region). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

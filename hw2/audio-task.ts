@@ -10,6 +10,11 @@ export interface AudioTask {
   trackUrl: string;
   /** Cancels the in-flight download/decode for this task. */
   controller: AbortController;
+  /**
+   * Download + decode, started the moment the task is enqueued so that all
+   * tracks load in parallel. Delivery to the caller is still FIFO.
+   */
+  ready: Promise<AudioBuffer>;
   /** Settles the enqueue() promise with the decoded audio. */
   resolve: (buffer: AudioBuffer) => void;
   /** Rejects the enqueue() promise (failure or AbortError). */

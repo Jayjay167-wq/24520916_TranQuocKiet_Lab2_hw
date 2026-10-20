@@ -1,6 +1,12 @@
 import type { AudioTask } from "./audio-task";
 import { audioEngine } from "./audioEngine";
 
+function createAbortError(message = "The operation was aborted."): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
 /** Injectable I/O, so the queue can be tested without a browser or network. */
 export interface AudioTaskQueueOptions {
   /** Defaults to the global fetch. */
@@ -11,7 +17,7 @@ export interface AudioTaskQueueOptions {
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
-    throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    throw signal.reason ?? createAbortError();
   }
 }
 
@@ -33,12 +39,13 @@ function throwIfAborted(signal: AbortSignal): void {
  *   activeController AbortController of the task currently at the head
  *                    (being waited on), or null when idle
  *
- * Playback lives in audioEngine.ts (Task 2.3): feed each delivered buffer to
+ * Playback lives in audioEngine.ts: feed each delivered buffer to
  * audioEngine.playBuffer(); it plays tracks one after another.
  *
- * NOT implemented yet:
- *   - cancel API + AudioBufferSourceNode cleanup              (Task 2.4)
- * (Each task's fetch already receives its AbortSignal, ready for 2.4.)
+ * cancel() (Task 2.4) aborts every task through its AbortController: the
+ * in-flight downloads are cancelled and all pending promises reject with an
+ * AbortError. Stopping tracks that are already playing is the engine's job
+ * (audioEngine.stop()).
  */
 export class AudioTaskQueue {
   private queue: AudioTask[] = [];
@@ -69,6 +76,26 @@ export class AudioTaskQueue {
       this.queue.push({ trackUrl, controller, ready, resolve, reject });
       void this.processNext();
     });
+  }
+
+  /**
+   * Cancels everything: the task at the head (downloading/decoding) and all
+   * tasks waiting behind it. Each task's AbortController is aborted, so
+   * fetches stop, and each enqueue() promise rejects with an AbortError.
+   * The queue stays usable: new enqueue() calls work normally afterwards.
+   */
+  cancel(): void {
+    const reason = createAbortError("The task was cancelled.");
+
+    // Head: its `ready` rejects with the abort reason; the drain loop then
+    // rejects the task's promise and clears the active state.
+    this.activeController?.abort(reason);
+
+    // Waiting tasks: abort and reject right away, then empty the queue.
+    for (const task of this.queue.splice(0)) {
+      task.controller.abort(reason);
+      task.reject(reason);
+    }
   }
 
   /** Read-only view of the internal state (useful for tests and the UI). */

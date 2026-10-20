@@ -1,33 +1,53 @@
+function createAbortError(message: string): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException(message, "AbortError");
+  }
+
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
 /**
- * Web Audio engine – Task 2.3.
+ * Web Audio engine – Tasks 2.3 + 2.4.
  *
  * Owns the single AudioContext and the AnalyserNode, plays decoded buffers
  * one at a time, and exposes frequency data for the visualizer.
  *
  * Graph:  AudioBufferSourceNode -> AnalyserNode (fftSize 512) -> destination
  *
- * Handled here:
  *  - lazy context creation (nothing touches Web Audio until first use)
  *  - suspended / interrupted context (autoplay policy): resume() is tried,
- *    and a one-time "first user gesture" listener retries it, so playback
- *    starts as soon as the browser allows instead of hanging silently
- *  - strict FIFO playback: concurrent playBuffer() calls are chained, so a
- *    track never starts before the previous one has ended
- *  - per-track node cleanup: the source is disconnected in onended
- *
- * NOT implemented yet (Task 2.4): stop/cancel of the playing or waiting
- * tracks, full dispose(), and the requestAnimationFrame visualizer.
+ *    and a one-time "first user gesture" listener retries it
+ *  - strict FIFO playback: concurrent playBuffer() calls are chained
+ *  - cleanup: stop() halts the playing track (stop + disconnect) and rejects
+ *    every waiting one with an AbortError; dispose() additionally disconnects
+ *    the analyser, removes listeners and closes the AudioContext
  */
 
 export const FFT_SIZE = 512;
 /** Number of frequency bins an AnalyserNode with FFT_SIZE exposes (256). */
 export const FREQUENCY_BIN_COUNT = FFT_SIZE / 2;
 
+export interface PlayOptions {
+  /** Called when the track actually starts sounding (after any wait). */
+  onStart?: () => void;
+}
+
+interface Playback {
+  cancel: () => void;
+}
+
 export class AudioEngine {
   private context: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
-  private unlockArmed = false;
   private playChain: Promise<void> = Promise.resolve();
+  private currentPlayback: Playback | null = null;
+  /** Bumped by stop(); plays queued before the bump are aborted. */
+  private epoch = 0;
+  /** Rejectors for plays waiting on a suspended context. */
+  private waiters = new Set<() => void>();
+  private disarmUnlock: (() => void) | null = null;
 
   /** Reused on every call so a 60fps render loop does not allocate. */
   private readonly frequencyData = new Uint8Array(FREQUENCY_BIN_COUNT);
@@ -38,18 +58,14 @@ export class AudioEngine {
     return this.context ? this.context.state : "uninitialized";
   }
 
-  /**
-   * Decodes encoded audio (mp3/wav/…) with the shared context. Decoding works
-   * while the context is suspended, so loading never waits for a gesture.
-   */
+  /** Decodes encoded audio with the shared context (works while suspended). */
   decodeAudioData(data: ArrayBuffer): Promise<AudioBuffer> {
     return this.getContext().decodeAudioData(data);
   }
 
   /**
-   * Resumes a suspended context. Call it from a click/keypress handler (for
-   * example the Play button) – browsers only allow audio to start after a
-   * user gesture. Resolves once the context is running.
+   * Resumes a suspended context. Call it from a click/keypress handler:
+   * browsers only allow audio to start after a user gesture.
    */
   resume(): Promise<void> {
     return this.ensureRunning();
@@ -57,21 +73,21 @@ export class AudioEngine {
 
   /**
    * Plays a decoded buffer through the analyser and resolves when it ends
-   * (source.onended). Calls are queued: if a track is already playing, this
-   * one starts only after it has ended. A failure in one track does not
-   * block the tracks queued behind it.
+   * (source.onended). Calls are queued: a track starts only after the
+   * previous one has ended. Rejects with an AbortError if stop()/dispose()
+   * is called before or during playback.
    */
-  playBuffer(buffer: AudioBuffer): Promise<void> {
-    const run = this.playChain.then(() => this.playNow(buffer));
+  playBuffer(buffer: AudioBuffer, options: PlayOptions = {}): Promise<void> {
+    const epoch = this.epoch;
+    const run = this.playChain.then(() => this.playNow(buffer, epoch, options));
     this.playChain = run.catch(() => {}); // keep the chain alive after errors
     return run;
   }
 
   /**
    * Current spectrum, 0–255 per bin, FREQUENCY_BIN_COUNT (256) bins.
-   * Returns the SAME array each call (updated in place) – copy it if you need
-   * to keep a snapshot. Returns silence if nothing has been played yet; it
-   * never creates the AudioContext, so calling it every frame is safe.
+   * Returns the SAME array each call (updated in place). Returns silence if
+   * nothing has been played; never creates the AudioContext.
    */
   getFrequencyData() {
     if (!this.analyser) return this.silence;
@@ -79,24 +95,80 @@ export class AudioEngine {
     return this.frequencyData;
   }
 
+  /**
+   * Stops the track that is playing (source.stop + disconnect) and aborts
+   * every track still waiting. Their playBuffer() promises reject with an
+   * AbortError. The engine stays usable afterwards.
+   */
+  stop(): void {
+    this.epoch++;
+    for (const abort of [...this.waiters]) abort();
+    this.currentPlayback?.cancel();
+  }
+
+  /**
+   * Full teardown: stop(), remove the gesture listeners, disconnect the
+   * analyser and close the AudioContext. A later playBuffer()/decode call
+   * lazily creates a fresh context, so the engine can be reused.
+   */
+  dispose(): void {
+    this.stop();
+    this.disarmUnlock?.();
+    this.analyser?.disconnect();
+    const context = this.context;
+    this.context = null;
+    this.analyser = null;
+    this.playChain = Promise.resolve();
+    if (context && context.state !== "closed") {
+      context.close().catch(() => {});
+    }
+  }
+
   // ---------------------------------------------------------------------
 
-  private async playNow(buffer: AudioBuffer): Promise<void> {
+  private assertCurrent(epoch: number): void {
+    if (epoch !== this.epoch) throw createAbortError("Playback was stopped.");
+  }
+
+  private async playNow(
+    buffer: AudioBuffer,
+    epoch: number,
+    { onStart }: PlayOptions,
+  ): Promise<void> {
+    this.assertCurrent(epoch); // stopped while waiting for earlier tracks
     await this.ensureRunning();
+    this.assertCurrent(epoch); // stopped while waiting for the context
+
     const context = this.getContext();
     const analyser = this.getAnalyser();
-
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(analyser);
 
-    return new Promise<void>((resolve) => {
-      source.onended = () => {
+    return new Promise<void>((resolve, reject) => {
+      const release = () => {
         source.onended = null;
-        source.disconnect(); // release the node as soon as it finishes
+        source.disconnect(); // free the node
+        if (this.currentPlayback === playback) this.currentPlayback = null;
+      };
+      const playback: Playback = {
+        cancel: () => {
+          try {
+            source.stop();
+          } catch {
+            /* already stopped */
+          }
+          release();
+          reject(createAbortError("Playback was stopped."));
+        },
+      };
+      source.onended = () => {
+        release();
         resolve();
       };
+      this.currentPlayback = playback;
       source.start();
+      onStart?.();
     });
   }
 
@@ -118,8 +190,7 @@ export class AudioEngine {
 
   /**
    * Resolves when the context is "running". Covers "suspended" and also
-   * "interrupted" (iOS Safari), which is why it checks for anything that is
-   * not running/closed rather than only "suspended".
+   * "interrupted" (iOS Safari). stop()/dispose() reject the wait.
    */
   private async ensureRunning(): Promise<void> {
     const context = this.getContext();
@@ -133,15 +204,24 @@ export class AudioEngine {
     this.armGestureUnlock();
 
     await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        context.removeEventListener("statechange", onChange);
+        this.waiters.delete(abort);
+      };
       const onChange = () => {
         if (context.state === "running") {
-          context.removeEventListener("statechange", onChange);
+          cleanup();
           resolve();
         } else if (context.state === "closed") {
-          context.removeEventListener("statechange", onChange);
+          cleanup();
           reject(new Error("AudioContext was closed while waiting to resume"));
         }
       };
+      const abort = () => {
+        cleanup();
+        reject(createAbortError("Playback was stopped."));
+      };
+      this.waiters.add(abort);
       context.addEventListener("statechange", onChange);
       onChange(); // the state may already have changed
     });
@@ -149,15 +229,18 @@ export class AudioEngine {
 
   /** Retries resume() on the first user gesture (autoplay policy). */
   private armGestureUnlock(): void {
-    if (this.unlockArmed || typeof document === "undefined") return;
-    this.unlockArmed = true;
+    if (this.disarmUnlock || typeof document === "undefined") return;
     const events = ["pointerdown", "keydown", "touchend"] as const;
-    const unlock = () => {
+    const disarm = () => {
       events.forEach((name) => document.removeEventListener(name, unlock));
-      this.unlockArmed = false;
-      this.getContext().resume().catch(() => {});
+      this.disarmUnlock = null;
+    };
+    const unlock = () => {
+      disarm();
+      this.context?.resume().catch(() => {});
     };
     events.forEach((name) => document.addEventListener(name, unlock));
+    this.disarmUnlock = disarm;
   }
 }
 

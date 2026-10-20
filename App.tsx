@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { DataGrid } from "./components/DataGrid";
-import { employees, employeeColumns, type Employee } from "./data/sampleData";
+import { DataGrid } from "./DataGrid";
+import { employees, employeeColumns } from "./sampleData";
 
 export default function App() {
   const [selected, setSelected] = useState<Employee | null>(null);

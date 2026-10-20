@@ -10,8 +10,8 @@ export default function App() {
       <h1>HW2 – Audio Visualizer Queue Engine</h1>
       <p>
         Setup complete. Queue state: {state.pending} pending,{" "}
-        {state.isProcessing ? "processing" : "idle"}. The Web Audio engine comes in
-        Task 2.3.
+        {state.isProcessing ? "processing" : "idle"}. The visualizer and cleanup come in
+        Task 2.4.
       </p>
     </main>
   );
